@@ -9,7 +9,7 @@ use bitcoin::blockdata::script::Instruction;
 use descriptor::satisfied_constraints::Error as IntError;
 use descriptor::satisfied_constraints::{Stack, StackElement};
 use descriptor::Descriptor;
-use miniscript::{Legacy, Miniscript, Segwitv0};
+use miniscript::{context::ScriptContextError, Legacy, Miniscript, Segwitv0};
 use Error;
 use ToPublicKey;
 
@@ -87,7 +87,8 @@ fn verify_p2wpkh<'txin>(
     }
     if let Some((pk_bytes, witness)) = witness.split_last() {
         if let Ok(pk) = bitcoin::PublicKey::from_slice(pk_bytes) {
-            let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
+            let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                .map_err(|_| ScriptContextError::CompressedOnly)?;
             if addr.script_pubkey() != *script_pubkey {
                 return Err(Error::InterpreterError(IntError::PkEvaluationError(pk)));
             }
@@ -318,8 +319,9 @@ mod tests {
         assert_eq!(stack, stack![Push(&sigs[0])]);
 
         //test wpkh
-        let script_pubkey =
-            bitcoin::Address::p2wpkh(&pks[1], bitcoin::Network::Bitcoin).script_pubkey();
+        let script_pubkey = bitcoin::Address::p2wpkh(&pks[1], bitcoin::Network::Bitcoin)
+            .expect("Uncompressed pubkey?")
+            .script_pubkey();
         let script_sig = script::Builder::new().into_script();
         let witness = vec![sigs[1].clone(), pks[1].clone().to_bytes()];
         let (des, stack) = from_txin_with_witness_stack(&script_pubkey, &script_sig, &witness)
@@ -381,10 +383,11 @@ mod tests {
         assert_eq!(stack, stack![Push(&sigs[1]), Push(&sigs[3])]);
 
         //test shwpkh
-        let script_pubkey =
-            bitcoin::Address::p2shwpkh(&pks[2], bitcoin::Network::Bitcoin).script_pubkey();
-        let redeem_script =
-            bitcoin::Address::p2wpkh(&pks[2], bitcoin::Network::Bitcoin).script_pubkey();
+        let script_pubkey = bitcoin::Address::p2shwpkh(&pks[2], bitcoin::Network::Bitcoin)
+            .expect("Uncompressed pubkey?")
+            .script_pubkey();
+        let redeem_script = bitcoin::Address::p2wpkh(&pks[2], bitcoin::Network::Bitcoin)
+            .expect("Uncompressed pubkey?");
         let script_sig = script::Builder::new()
             .push_slice(&redeem_script.to_bytes())
             .into_script();

@@ -121,11 +121,9 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
             Descriptor::Bare(..) => None,
             Descriptor::Pk(..) => None,
             Descriptor::Pkh(ref pk) => Some(bitcoin::Address::p2pkh(&pk.to_public_key(), network)),
-            Descriptor::Wpkh(ref pk) => {
-                Some(bitcoin::Address::p2wpkh(&pk.to_public_key(), network))
-            }
+            Descriptor::Wpkh(ref pk) => bitcoin::Address::p2wpkh(&pk.to_public_key(), network).ok(),
             Descriptor::ShWpkh(ref pk) => {
-                Some(bitcoin::Address::p2shwpkh(&pk.to_public_key(), network))
+                bitcoin::Address::p2shwpkh(&pk.to_public_key(), network).ok()
             }
             Descriptor::Sh(ref miniscript) => {
                 Some(bitcoin::Address::p2sh(&miniscript.encode(), network))
@@ -140,29 +138,31 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
     }
 
     /// Computes the scriptpubkey of the descriptor
-    pub fn script_pubkey(&self) -> Script {
+    pub fn script_pubkey(&self) -> Result<Script, Error> {
         match *self {
-            Descriptor::Bare(ref d) => d.encode(),
-            Descriptor::Pk(ref pk) => script::Builder::new()
+            Descriptor::Bare(ref d) => Ok(d.encode()),
+            Descriptor::Pk(ref pk) => Ok(script::Builder::new()
                 .push_key(&pk.to_public_key())
                 .push_opcode(opcodes::all::OP_CHECKSIG)
-                .into_script(),
+                .into_script()),
             Descriptor::Pkh(ref pk) => {
                 let addr = bitcoin::Address::p2pkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
-                addr.script_pubkey()
+                Ok(addr.script_pubkey())
             }
             Descriptor::Wpkh(ref pk) => {
-                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
-                addr.script_pubkey()
+                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                    .map_err(|_| ScriptContextError::CompressedOnly)?;
+                Ok(addr.script_pubkey())
             }
             Descriptor::ShWpkh(ref pk) => {
                 let addr =
-                    bitcoin::Address::p2shwpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
-                addr.script_pubkey()
+                    bitcoin::Address::p2shwpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                        .map_err(|_| ScriptContextError::CompressedOnly)?;
+                Ok(addr.script_pubkey())
             }
-            Descriptor::Sh(ref miniscript) => miniscript.encode().to_p2sh(),
-            Descriptor::Wsh(ref miniscript) => miniscript.encode().to_v0_p2wsh(),
-            Descriptor::ShWsh(ref miniscript) => miniscript.encode().to_v0_p2wsh().to_p2sh(),
+            Descriptor::Sh(ref miniscript) => Ok(miniscript.encode().to_p2sh()),
+            Descriptor::Wsh(ref miniscript) => Ok(miniscript.encode().to_v0_p2wsh()),
+            Descriptor::ShWsh(ref miniscript) => Ok(miniscript.encode().to_v0_p2wsh().to_p2sh()),
         }
     }
 
@@ -174,28 +174,32 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
     /// This is used in Segwit transactions to produce an unsigned
     /// transaction whose txid will not change during signing (since
     /// only the witness data will change).
-    pub fn unsigned_script_sig(&self) -> Script {
+    ///
+    /// # Errors
+    /// If an uncompressed public key is present in a Segwit Script.
+    pub fn unsigned_script_sig(&self) -> Result<Script, Error> {
         match *self {
             // non-segwit
             Descriptor::Bare(..)
             | Descriptor::Pk(..)
             | Descriptor::Pkh(..)
-            | Descriptor::Sh(..) => Script::new(),
+            | Descriptor::Sh(..) => Ok(Script::new()),
             // pure segwit, empty scriptSig
-            Descriptor::Wsh(..) | Descriptor::Wpkh(..) => Script::new(),
+            Descriptor::Wsh(..) | Descriptor::Wpkh(..) => Ok(Script::new()),
             // segwit+p2sh
             Descriptor::ShWpkh(ref pk) => {
-                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
+                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                    .map_err(|_| ScriptContextError::CompressedOnly)?;
                 let redeem_script = addr.script_pubkey();
-                script::Builder::new()
+                Ok(script::Builder::new()
                     .push_slice(&redeem_script[..])
-                    .into_script()
+                    .into_script())
             }
             Descriptor::ShWsh(ref d) => {
                 let witness_script = d.encode();
-                script::Builder::new()
+                Ok(script::Builder::new()
                     .push_slice(&witness_script.to_v0_p2wsh()[..])
-                    .into_script()
+                    .into_script())
             }
         }
     }
@@ -204,18 +208,22 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
     /// script before any hashing is done. For `Bare`, `Pkh` and `Wpkh` this
     /// is the scriptPubkey; for `ShWpkh` and `Sh` this is the redeemScript;
     /// for the others it is the witness script.
-    pub fn witness_script(&self) -> Script {
+    ///
+    /// # Errors
+    /// If an uncompressed public key is present in a Segwit Script.
+    pub fn witness_script(&self) -> Result<Script, Error> {
         match *self {
             Descriptor::Bare(..)
             | Descriptor::Pk(..)
             | Descriptor::Pkh(..)
             | Descriptor::Wpkh(..) => self.script_pubkey(),
             Descriptor::ShWpkh(ref pk) => {
-                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
-                addr.script_pubkey()
+                let addr = bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                    .map_err(|_| ScriptContextError::CompressedOnly)?;
+                Ok(addr.script_pubkey())
             }
-            Descriptor::Sh(ref d) => d.encode(),
-            Descriptor::Wsh(ref d) | Descriptor::ShWsh(ref d) => d.encode(),
+            Descriptor::Sh(ref d) => Ok(d.encode()),
+            Descriptor::Wsh(ref d) | Descriptor::ShWsh(ref d) => Ok(d.encode()),
         }
     }
 
@@ -292,7 +300,8 @@ impl<Pk: MiniscriptKey + ToPublicKey> Descriptor<Pk> {
                     let mut sig_vec = sig.0.serialize_der().to_vec();
                     sig_vec.push(sig.1.as_u32() as u8);
                     let addr =
-                        bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin);
+                        bitcoin::Address::p2wpkh(&pk.to_public_key(), bitcoin::Network::Bitcoin)
+                            .map_err(|e| ScriptContextError::CompressedOnly)?;
                     let redeem_script = addr.script_pubkey();
 
                     txin.script_sig = script::Builder::new()
@@ -602,14 +611,14 @@ mod tests {
     pub fn script_pubkey() {
         let bare = StdDescriptor::from_str("older(1000)").unwrap();
         assert_eq!(
-            bare.script_pubkey(),
+            bare.script_pubkey().expect("No pubkey here"),
             bitcoin::Script::from(vec![0x02, 0xe8, 0x03, 0xb2])
         );
         assert_eq!(bare.address(bitcoin::Network::Bitcoin), None);
 
         let pk = StdDescriptor::from_str(TEST_PK).unwrap();
         assert_eq!(
-            pk.script_pubkey(),
+            pk.script_pubkey().expect("The pubkey is compressed"),
             bitcoin::Script::from(vec![
                 0x21, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -624,7 +633,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            pkh.script_pubkey(),
+            pkh.script_pubkey().expect("The pubkey is compressed"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_DUP)
                 .push_opcode(opcodes::all::OP_HASH160)
@@ -648,7 +657,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            wpkh.script_pubkey(),
+            wpkh.script_pubkey().expect("The pubkey is compressed"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_PUSHBYTES_0)
                 .push_slice(
@@ -669,7 +678,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            shwpkh.script_pubkey(),
+            shwpkh.script_pubkey().expect("The pubkey is compressed"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_HASH160)
                 .push_slice(
@@ -694,7 +703,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            sh.script_pubkey(),
+            sh.script_pubkey().expect("Not Segwit"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_HASH160)
                 .push_slice(
@@ -716,7 +725,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            wsh.script_pubkey(),
+            wsh.script_pubkey().expect("The pubkey is compressed"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_PUSHBYTES_0)
                 .push_slice(
@@ -742,7 +751,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            shwsh.script_pubkey(),
+            shwsh.script_pubkey().expect("Not compressed"),
             script::Builder::new()
                 .push_opcode(opcodes::all::OP_HASH160)
                 .push_slice(
@@ -812,7 +821,10 @@ mod tests {
                 witness: vec![],
             }
         );
-        assert_eq!(bare.unsigned_script_sig(), bitcoin::Script::new());
+        assert_eq!(
+            bare.unsigned_script_sig().expect("Not Segwit"),
+            bitcoin::Script::new()
+        );
 
         let pkh = Descriptor::Pkh(pk);
         pkh.satisfy(&mut txin, &satisfier).expect("satisfaction");
@@ -828,7 +840,10 @@ mod tests {
                 witness: vec![],
             }
         );
-        assert_eq!(pkh.unsigned_script_sig(), bitcoin::Script::new());
+        assert_eq!(
+            pkh.unsigned_script_sig().expect("Not segwit"),
+            bitcoin::Script::new()
+        );
 
         let wpkh = Descriptor::Wpkh(pk);
         wpkh.satisfy(&mut txin, &satisfier).expect("satisfaction");
@@ -841,7 +856,10 @@ mod tests {
                 witness: vec![sigser.clone(), pk.to_bytes(),],
             }
         );
-        assert_eq!(wpkh.unsigned_script_sig(), bitcoin::Script::new());
+        assert_eq!(
+            wpkh.unsigned_script_sig().expect("Pubkey is compressed"),
+            bitcoin::Script::new()
+        );
 
         let shwpkh = Descriptor::ShWpkh(pk);
         shwpkh.satisfy(&mut txin, &satisfier).expect("satisfaction");
@@ -863,7 +881,7 @@ mod tests {
             }
         );
         assert_eq!(
-            shwpkh.unsigned_script_sig(),
+            shwpkh.unsigned_script_sig().expect("Pubkey is compressed"),
             script::Builder::new()
                 .push_slice(&redeem_script[..])
                 .into_script()
@@ -883,7 +901,10 @@ mod tests {
                 witness: vec![],
             }
         );
-        assert_eq!(sh.unsigned_script_sig(), bitcoin::Script::new());
+        assert_eq!(
+            sh.unsigned_script_sig().expect("Not Segwit"),
+            bitcoin::Script::new()
+        );
 
         let ms = ms_str!("c:pk_k({})", pk);
 
@@ -898,7 +919,10 @@ mod tests {
                 witness: vec![sigser.clone(), ms.encode().into_bytes(),],
             }
         );
-        assert_eq!(wsh.unsigned_script_sig(), bitcoin::Script::new());
+        assert_eq!(
+            wsh.unsigned_script_sig().expect("Pubkey is compressed"),
+            bitcoin::Script::new()
+        );
 
         let shwsh = Descriptor::ShWsh(ms.clone());
         shwsh.satisfy(&mut txin, &satisfier).expect("satisfaction");
@@ -914,7 +938,7 @@ mod tests {
             }
         );
         assert_eq!(
-            shwsh.unsigned_script_sig(),
+            shwsh.unsigned_script_sig().expect("pubkey is compressed"),
             script::Builder::new()
                 .push_slice(&ms.encode().to_v0_p2wsh()[..])
                 .into_script()
