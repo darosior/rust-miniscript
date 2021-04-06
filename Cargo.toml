@@ -19,7 +19,7 @@ rand = ["bitcoin/rand"]
 bitcoin = "0.26"
 
 [dependencies.serde]
-version = "1.0"
+version = "1.0.98"
 optional = true
 
 [[example]]
